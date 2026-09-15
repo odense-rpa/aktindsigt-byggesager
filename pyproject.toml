@@ -9,6 +9,7 @@ dependencies = [
     "azure-identity>=1.15.0",
     "geoenviron",
     "msgraph-sdk>=1.0.0",
+    "olefile>=0.47",
     "openpyxl>=3.1.5",
     "odk-tools",
     "pypdf>=4.3.1",

@@ -117,11 +117,89 @@ class GeoEnvironService:
     
 
     @staticmethod
-    def _read_word_text(file_path: Path) -> str:
-        """Extract text from Word documents (.docx, with fallback for .doc)."""
-        if file_path.suffix.lower() == ".doc":
-            return file_path.read_text(encoding="utf-8", errors="ignore")
+    def _read_legacy_doc_text(file_path: Path) -> str:
+        """Extract text from a legacy Word 97-2003 (.doc) OLE file.
 
+        .doc text is split into cp1252 and UTF-16LE pieces referenced by a
+        piece table (Clx/PlcPcd) inside the FIB, so it can't be decoded as
+        plain UTF-8. This walks FIB -> Clx -> PlcPcd to recover the pieces.
+        """
+        import struct
+
+        try:
+            import olefile
+        except ImportError:
+            return ""
+
+        try:
+            ole = olefile.OleFileIO(str(file_path))
+        except (OSError, ValueError):
+            return ""
+
+        try:
+            if not ole.exists("WordDocument"):
+                return ""
+            word_stream = ole.openstream("WordDocument").read()
+
+            flags = struct.unpack_from("<H", word_stream, 0x0A)[0]
+            table_stream_name = "1Table" if flags & 0x0200 else "0Table"
+            if not ole.exists(table_stream_name):
+                return ""
+            table_stream = ole.openstream(table_stream_name).read()
+
+            fc_clx, lcb_clx = struct.unpack_from("<II", word_stream, 0x1A2)
+            clx = table_stream[fc_clx:fc_clx + lcb_clx]
+
+            # Skip RgPrc entries (each prefixed with 0x01) to reach the Pcdt (0x02).
+            pos = 0
+            while pos < len(clx) and clx[pos] == 0x01:
+                cb_prc = struct.unpack_from("<H", clx, pos + 1)[0]
+                pos += 1 + 2 + cb_prc
+            if pos >= len(clx) or clx[pos] != 0x02:
+                return ""
+
+            lcb_plc_pcd = struct.unpack_from("<I", clx, pos + 1)[0]
+            plc_pcd = clx[pos + 5: pos + 5 + lcb_plc_pcd]
+
+            piece_count = (len(plc_pcd) - 4) // 12
+            if piece_count <= 0:
+                return ""
+
+            cps = struct.unpack_from(f"<{piece_count + 1}I", plc_pcd, 0)
+            pcds_offset = (piece_count + 1) * 4
+
+            parts: list[str] = []
+            for i in range(piece_count):
+                char_count = cps[i + 1] - cps[i]
+                if char_count <= 0:
+                    continue
+
+                pcd_offset = pcds_offset + i * 8
+                fc_raw = struct.unpack_from("<I", plc_pcd, pcd_offset + 2)[0]
+                is_compressed = bool(fc_raw & 0x40000000)
+                fc = fc_raw & ~0x40000000
+
+                if is_compressed:
+                    fc //= 2
+                    raw = word_stream[fc:fc + char_count]
+                    text = raw.decode("cp1252", errors="ignore")
+                else:
+                    raw = word_stream[fc:fc + char_count * 2]
+                    text = raw.decode("utf-16-le", errors="ignore")
+
+                parts.append(text)
+        except (struct.error, IndexError):
+            return ""
+        finally:
+            ole.close()
+
+        # Field codes and other control characters aren't real text content.
+        full_text = re.sub(r"[\x00-\x08\x0b-\x1f]", " ", "".join(parts))
+        return " ".join(full_text.split())
+
+    @staticmethod
+    def _read_docx_text(file_path: Path) -> str:
+        """Extract text from an OOXML Word document (.docx)."""
         try:
             from docx import Document
         except ImportError:
@@ -139,6 +217,25 @@ class GeoEnvironService:
                 values.append(paragraph_text)
 
         return " ".join(values)
+
+    @staticmethod
+    def _read_word_text(file_path: Path) -> str:
+        """Extract text from Word documents (.docx, with fallback for .doc)."""
+        try:
+            with file_path.open("rb") as f:
+                signature = f.read(4)
+        except OSError:
+            signature = b""
+
+        # Some .doc files are actually OOXML (zip) content mislabeled with the
+        # legacy extension, and vice versa, so sniff the real format instead
+        # of trusting the file extension.
+        if signature.startswith(b"PK\x03\x04"):
+            return GeoEnvironService._read_docx_text(file_path)
+        if file_path.suffix.lower() == ".doc":
+            return GeoEnvironService._read_legacy_doc_text(file_path)
+
+        return GeoEnvironService._read_docx_text(file_path)
     
 
     @staticmethod
