@@ -32,7 +32,7 @@ Vurder altid dokumentindhold ud fra et forsigtighedsprincip.
 
 Marker kun oplysninger, der reelt kan vaere foelsomme eller kraever manuel vurdering:
 1) CPR-numre (hele eller delvise), sundhedskortnumre og lignende entydige ID-oplysninger.
-2) Helbredsoplysninger, fx sygdom, diagnoser, behandlingsforloeb, psykiske forhold
+2) Helbredsoplysninger, fx allergi, sygdom, diagnoser, behandlingsforloeb, psykiske forhold
     eller beskrivelser af borgere, der er syge pga. skimmelsvamp.
 3) Oplysninger om sociale/private forhold, fx familieforhold, økonomiske vanskeligheder,
     saarbare livsomstaendigheder eller andre tydeligt private detaljer.
@@ -316,6 +316,29 @@ class GeoEnvironService:
         except (OSError, ValueError):
             return ""
 
+    # Outlook renders inline images as "[<alt text>]" in plain-text bodies, often
+    # immediately followed by a Safelinks-wrapped "<https://...>" tracking URL for
+    # the image's hyperlink (e.g. a logo linking to a social media page). Neither
+    # carries real message content, so they're stripped before further processing.
+    _EMAIL_IMAGE_LINK_RE = re.compile(r"\[[^\[\]]{0,300}\]\s*<[^<>]{0,4000}>")
+    _EMAIL_IMAGE_CID_RE = re.compile(r"\[cid:[^\[\]]*\]", re.IGNORECASE)
+
+    @classmethod
+    def _strip_email_image_boilerplate(cls, text: str) -> str:
+        """Remove Outlook's plain-text image/link placeholders, then re-flow the
+        remaining text so word-wrapped lines become paragraphs again (blank lines
+        are kept as paragraph breaks; single line breaks are just wrap artifacts)."""
+        text = cls._EMAIL_IMAGE_LINK_RE.sub(" ", text)
+        text = cls._EMAIL_IMAGE_CID_RE.sub(" ", text)
+
+        paragraphs = re.split(r"\n\s*\n", text)
+        reflowed = []
+        for paragraph in paragraphs:
+            merged = " ".join(paragraph.split())
+            if merged:
+                reflowed.append(merged)
+        return "\n".join(reflowed)
+
     @staticmethod
     def _read_email_text(file_path: Path) -> str:
         """Extract text from RFC email (.eml) and Outlook MSG files."""
@@ -330,7 +353,7 @@ class GeoEnvironService:
                     if value
                 ]
                 message.close()
-                return " ".join(text_parts)
+                return GeoEnvironService._strip_email_image_boilerplate(" ".join(text_parts))
             except (OSError, ValueError):
                 return ""
 
@@ -379,7 +402,7 @@ class GeoEnvironService:
                     if text:
                         text_parts.append(text)
 
-            return " ".join(text_parts)
+            return GeoEnvironService._strip_email_image_boilerplate(" ".join(text_parts))
         except (OSError, ValueError):
             return ""
 
@@ -525,8 +548,32 @@ class GeoEnvironService:
         return output.getvalue()
 
     @staticmethod
-    def _convert_docx_to_pdf_bytes(file_path: Path) -> bytes | None:
-        if file_path.suffix.lower() not in {".docx", ".doc"}:
+    def _image_to_pdf_bytes(file_path: Path) -> bytes | None:
+        if file_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp"}:
+            return None
+
+        try:
+            from PIL import Image
+            from reportlab.pdfgen import canvas
+        except ImportError:
+            return None
+
+        try:
+            with Image.open(file_path) as image:
+                image = image.convert("RGB")
+                pdf_buffer = BytesIO()
+                width, height = image.size
+                page = canvas.Canvas(pdf_buffer, pagesize=(width, height))
+                page.drawImage(file_path, 0, 0, width=width, height=height)
+                page.showPage()
+                page.save()
+                return pdf_buffer.getvalue()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _convert_document_to_pdf_bytes(file_path: Path) -> bytes | None:
+        if file_path.suffix.lower() not in {".doc", ".docx", ".msg", ".eml"}:
             return None
 
         try:
@@ -541,6 +588,10 @@ class GeoEnvironService:
             return None
 
         return response.content
+
+    @staticmethod
+    def _convert_docx_to_pdf_bytes(file_path: Path) -> bytes | None:
+        return GeoEnvironService._convert_document_to_pdf_bytes(file_path)
 
     def hent_dokumenter_og_bilag(
         self,
@@ -732,6 +783,7 @@ class GeoEnvironService:
         extra_files: list[dict[str, str | bytes]] | None = None,
     ) -> list[Path]:
         """Create a raw-file folder and merged PDF bundles for the case."""
+        # TODO: Is it possible in this method to support image type files? Like .jpeg, .jpg, .png, .gif as pictures in a pdf?
         output_path = Path(output_mount) / sags_id
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -796,8 +848,14 @@ class GeoEnvironService:
                     pdf_bytes = self._text_to_pdf_bytes(title, self._read_excel_text(file_path))
                 elif media_type == "text/html":
                     pdf_bytes = self._text_to_pdf_bytes(title, self._read_html_text(file_path))
-                elif media_type in ["message/rfc822", "application/vnd.ms-outlook"] or suffix == ".msg":
-                    pdf_bytes = self._text_to_pdf_bytes(title, self._read_email_text(file_path))
+                elif media_type in ["message/rfc822", "application/vnd.ms-outlook"] or suffix.lower() in {".msg", ".eml"}:
+                    converted_pdf = self._convert_document_to_pdf_bytes(file_path)
+                    if converted_pdf is not None:
+                        pdf_bytes = converted_pdf
+                    else:
+                        pdf_bytes = self._text_to_pdf_bytes(title, self._read_email_text(file_path))
+                elif media_type.startswith("image/") or suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp"}:
+                    pdf_bytes = self._image_to_pdf_bytes(file_path)
 
                 if pdf_bytes is None:
                     continue
