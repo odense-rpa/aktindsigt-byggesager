@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 from html import escape
 from pathlib import Path
@@ -82,14 +83,18 @@ async def process_workqueue(workqueue: Workqueue) -> None:
     for item in workqueue:
         with item:
             data = item.data  # Item data deserialized from json as dict
+            
+            if data.get("kind") != "folder" or not re.match(r"^\d{4}-\d{4}$", data.get("name", "")):
+                logger.warning("Skipping item with unexpected kind or name format: %s", data)
+                continue
  
             try:
-                sag = geoenviron.hent_sager(params={"$top": 1, "$filter": f"case_no eq '{data['sags_id']}'"})
+                sag = geoenviron.hent_sager(params={"$top": 1, "$filter": f"case_no eq '{data['name']}'"})
                 if not sag:
-                    raise WorkItemError(f"Sag med ID {data['sags_id']} blev ikke fundet i GeoEnviron.")
+                    raise WorkItemError(f"Sag med ID {data['name']} blev ikke fundet i GeoEnviron.")
 
                 
-                dokumenter = geoenviron_service.hent_dokumenter_og_bilag(sags_id=data["sags_id"])
+                dokumenter = geoenviron_service.hent_dokumenter_og_bilag(sags_id=data["name"])
                 konklusion = await geoenviron_service.scan_dokumenter(dokumenter=dokumenter)
                 sagsnoter = geoenviron_service.forbered_sagsnotater(
                     dokumenter=dokumenter,
@@ -99,12 +104,12 @@ async def process_workqueue(workqueue: Workqueue) -> None:
                     dokumenter=dokumenter,
                     extra_files=sagsnoter,
                     output_mount=geoenviron_service.output_mount,
-                    sags_id=data["sags_id"],
+                    sags_id=data["name"],
                 )
 
                 body_parts = [
                     "<html><body>",
-                    f"<p>TYRA har klargjort en pakke med filer til sag <strong>{escape(str(data['sags_id']))}</strong>.</p>",
+                    f"<p>TYRA har klargjort en pakke med filer til sag <strong>{escape(str(data['name']))}</strong>.</p>",
                 ]                
                 if konklusion:
                     body_parts.extend([
@@ -114,12 +119,12 @@ async def process_workqueue(workqueue: Workqueue) -> None:
                 else:
                     body_parts.append("<p>Der blev ikke fundet oplysninger, som kræver manuel vurdering.</p>")
 
-                body_parts.append(f"<p>Pakken kan findes på G:\\RPA\\Leverancer\\Aktindsigt Byggesager\\{data['sags_id']}</p>")
+                body_parts.append(f"<p>Pakken kan findes på G:\\RPA\\Leverancer\\Aktindsigt Byggesager\\{data['name']}</p>")
                 body_parts.append("</body></html>")
                 
                 await mail_service.send_mail(
                     to_address="byggesag@odense.dk",
-                    subject=f"TYRA har klargjort en pakke til sag: {data['sags_id']}",
+                    subject=f"TYRA har klargjort en pakke til sag: {data['name']}",
                     body="".join(body_parts),
                     attachments=[],
                     body_type=BodyType.Html,
