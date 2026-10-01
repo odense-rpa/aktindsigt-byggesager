@@ -54,6 +54,8 @@ Marker kun oplysninger, der reelt kan vaere foelsomme eller kraever manuel vurde
     Skimmelsvamp
     Syg
     Politi
+5) Oplysninger i forbindelse med kriminelle forhold, fx anmeldelser, sigtelser, politirapporter eller sager om strafbare forhold.
+Herunder politianmeldelser, sigtelser, politirapporter, sager om strafbare forhold, og oplysninger om
 
 Se altid bort fra følgende, medmindre de indgår i en konkret foelsom sammenhaeng:
 1) Almindelige navne på ansøgere, ejere, rådgivere, entreprenører og kontaktpersoner.
