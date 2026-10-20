@@ -2,7 +2,9 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import sys
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from msgraph.generated.models.body_type import BodyType
 from typing import Optional
 
 proces_navn = "Aktindsigt Byggesager"
+MAX_OUTPUT_AGE = timedelta(days=7)
 
 geoenviron: Optional[GeoEnvironClient] = None
 geoenviron_service: Optional[GeoEnvironService] = None
@@ -33,6 +36,15 @@ def _is_windows_metadata_entry(path: Path) -> bool:
         "system volume information",
     }
     return name in ignored_names or name.startswith(".~") or name.startswith("~$") or name.startswith("._")
+
+
+def _is_expired_completed_item(item) -> bool:
+    if item.status != WorkItemStatus.COMPLETED.value:
+        return False
+    created_at = item.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - created_at > MAX_OUTPUT_AGE
 
 
 async def populate_queue(workqueue: Workqueue):
@@ -57,10 +69,14 @@ async def populate_queue(workqueue: Workqueue):
             has_visible_content = True
             break
 
+        eksisterende_kødata = workqueue.get_item_by_reference(folder.name)
+
         if has_visible_content:
+            if eksisterende_kødata and _is_expired_completed_item(eksisterende_kødata):
+                logger.warning("Deleting completed case folder older than %s: %s", MAX_OUTPUT_AGE, folder)
+                shutil.rmtree(folder)
             continue
 
-        eksisterende_kødata = workqueue.get_item_by_reference(folder.name)
         if eksisterende_kødata:
             continue
 
