@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
-from automation_server_client import AutomationServer, Workqueue, WorkItemError, Credential, WorkItemStatus
+from automation_server_client import AutomationServer, Workqueue, WorkItemError, Credential
 from geoenviron.client import GeoEnvironClient
 from odk_tools.tracking import Tracker
 from services.geoenviron_service import GeoEnvironService
@@ -24,16 +24,12 @@ geoenviron_service: Optional[GeoEnvironService] = None
 mail_service: Optional[MailService] = None
 
 
-def _is_expired_completed_item(item) -> bool:
-    if item.status != WorkItemStatus.COMPLETED.value:
-        return False
-    created_at = item.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - created_at > MAX_OUTPUT_AGE
+def _is_expired_folder(folder: Path) -> bool:
+    modified_at = datetime.fromtimestamp(folder.stat().st_mtime, tz=timezone.utc)
+    return datetime.now(timezone.utc) - modified_at > MAX_OUTPUT_AGE
 
 
-async def delete_expired_folders(workqueue: Workqueue):
+async def delete_expired_folders():
     logger = logging.getLogger(__name__)
 
     if geoenviron_service is None:
@@ -48,10 +44,13 @@ async def delete_expired_folders(workqueue: Workqueue):
         if not folder.is_dir():
             continue
 
-        eksisterende_kødata = workqueue.get_item_by_reference(folder.name)
+        # Queue references look like "<process>:<case>:<trigger id>", so a folder can't be mapped back
+        # to its work item. Empty folders are still awaiting processing; packaged ones age out by mtime.
+        if not any(folder.iterdir()):
+            continue
 
-        if eksisterende_kødata and _is_expired_completed_item(eksisterende_kødata):
-            logger.warning("Deleting completed case folder older than %s: %s", MAX_OUTPUT_AGE, folder)
+        if _is_expired_folder(folder):
+            logger.warning("Deleting case folder older than %s: %s", MAX_OUTPUT_AGE, folder)
             shutil.rmtree(folder)
 
 
@@ -175,7 +174,7 @@ async def main(ats: AutomationServer, tracker: Tracker, robot_credential: Creden
     await mail_service.initialize()
 
     if "--cleanup" in sys.argv:
-        await delete_expired_folders(workqueue)
+        await delete_expired_folders()
         return
 
     await process_workqueue(workqueue)
