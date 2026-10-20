@@ -15,14 +15,14 @@
             ]
         },
         {
-            "name": "main.py --queue",
+            "name": "main.py --cleanup",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": [
-                "--queue"
+                "--cleanup"
             ]
         }
     ]

@@ -24,20 +24,6 @@ geoenviron_service: Optional[GeoEnvironService] = None
 mail_service: Optional[MailService] = None
 
 
-def _is_windows_metadata_entry(path: Path) -> bool:
-    name = path.name.lower()
-    ignored_names = {
-        ".ds_store",
-        "desktop.ini",
-        "thumbs.db",
-        "ehthumbs.db",
-        "ehthumbs_vista.db",
-        "$recycle.bin",
-        "system volume information",
-    }
-    return name in ignored_names or name.startswith(".~") or name.startswith("~$") or name.startswith("._")
-
-
 def _is_expired_completed_item(item) -> bool:
     if item.status != WorkItemStatus.COMPLETED.value:
         return False
@@ -47,7 +33,7 @@ def _is_expired_completed_item(item) -> bool:
     return datetime.now(timezone.utc) - created_at > MAX_OUTPUT_AGE
 
 
-async def populate_queue(workqueue: Workqueue):
+async def delete_expired_folders(workqueue: Workqueue):
     logger = logging.getLogger(__name__)
 
     if geoenviron_service is None:
@@ -62,29 +48,11 @@ async def populate_queue(workqueue: Workqueue):
         if not folder.is_dir():
             continue
 
-        has_visible_content = False
-        for child in folder.iterdir():
-            if child.name.startswith(".") or _is_windows_metadata_entry(child):
-                continue
-            has_visible_content = True
-            break
-
         eksisterende_kødata = workqueue.get_item_by_reference(folder.name)
 
-        if has_visible_content:
-            if eksisterende_kødata and _is_expired_completed_item(eksisterende_kødata):
-                logger.warning("Deleting completed case folder older than %s: %s", MAX_OUTPUT_AGE, folder)
-                shutil.rmtree(folder)
-            continue
-
-        if eksisterende_kødata:
-            continue
-
-        workqueue.add_item(
-            reference=folder.name,
-            data={"sags_id": folder.name},
-        )
-        logger.info("Queued empty case folder: %s", folder.name)
+        if eksisterende_kødata and _is_expired_completed_item(eksisterende_kødata):
+            logger.warning("Deleting completed case folder older than %s: %s", MAX_OUTPUT_AGE, folder)
+            shutil.rmtree(folder)
 
 
 async def process_workqueue(workqueue: Workqueue) -> None:
@@ -206,8 +174,8 @@ async def main(ats: AutomationServer, tracker: Tracker, robot_credential: Creden
     mail_service = MailService(robot_credential)
     await mail_service.initialize()
 
-    if "--queue" in sys.argv:
-        await populate_queue(workqueue)
+    if "--cleanup" in sys.argv:
+        await delete_expired_folders(workqueue)
         return
 
     await process_workqueue(workqueue)
