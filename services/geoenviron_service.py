@@ -633,24 +633,31 @@ class GeoEnvironService:
 
         if file_path is None:            
             text = dokument.get("description", "")
-        elif file_path.exists():        
-            if dokument["File@odata.mediaContentType"] == "application/pdf":
-                text = self._read_pdf_text(file_path)
-            elif dokument["File@odata.mediaContentType"] == "application/msword" or dokument["File@odata.mediaContentType"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                text = self._read_word_text(file_path)
-            elif dokument["File@odata.mediaContentType"] == "application/msexcel" or dokument["File@odata.mediaContentType"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":                                    
-                text = self._read_excel_text(file_path)                        
-            elif dokument["File@odata.mediaContentType"] == "text/html":
-                text = self._read_html_text(file_path)
-            elif (
-                dokument["File@odata.mediaContentType"] in ["message/rfc822", "application/vnd.ms-outlook"]
-                or file_path.suffix.lower() == ".msg"
-            ):
-                text = self._read_email_text(file_path)
-            elif dokument["File@odata.mediaContentType"] == "text/plain" and dokument["doc_type_name"].lower() not in ["notat"]:                                    
-                text = file_path.read_text(encoding="utf-8", errors="ignore")
-            elif dokument["File@odata.mediaContentType"] == "text/plain" and dokument["doc_type_name"].lower() in ["notat", "dpost ind", "dpost ud"]:
-                text =  dokument["description"]                
+        elif file_path.exists():
+            try:
+                if dokument["File@odata.mediaContentType"] == "application/pdf":
+                    text = self._read_pdf_text(file_path)
+                elif dokument["File@odata.mediaContentType"] == "application/msword" or dokument["File@odata.mediaContentType"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    text = self._read_word_text(file_path)
+                elif dokument["File@odata.mediaContentType"] == "application/msexcel" or dokument["File@odata.mediaContentType"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":                                    
+                    text = self._read_excel_text(file_path)                        
+                elif dokument["File@odata.mediaContentType"] == "text/html":
+                    text = self._read_html_text(file_path)
+                elif (
+                    dokument["File@odata.mediaContentType"] in ["message/rfc822", "application/vnd.ms-outlook"]
+                    or file_path.suffix.lower() == ".msg"
+                ):
+                    text = self._read_email_text(file_path)
+                elif dokument["File@odata.mediaContentType"] == "text/plain" and dokument["doc_type_name"].lower() not in ["notat"]:                                    
+                    text = file_path.read_text(encoding="utf-8", errors="ignore")
+                elif dokument["File@odata.mediaContentType"] == "text/plain" and dokument["doc_type_name"].lower() in ["notat", "dpost ind", "dpost ud"]:
+                    text =  dokument["description"]                
+            except Exception as e:
+                # Unreadable file (e.g. oversized/corrupt PDF) - warn the case handlers instead of aborting the run
+                return (
+                    f"<strong>Kunne ikke læse dokument {escape(self._document_title_with_id(self, dokument))}</strong>: "
+                    f"filen kunne ikke behandles automatisk og skal gennemgås manuelt ({escape(type(e).__name__)})"
+                )
 
         if text:
             try:
